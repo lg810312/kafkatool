@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.29509.3
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "KafkaExtractor", "KafkaExtractor\KafkaExtractor.csproj", "{2DDCC8C7-4EF1-4AF3-BD48-DB0A163C465D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KafkaSpout", "KafkaSpout\KafkaSpout.csproj", "{3BCFC07E-576C-4E21-8D0B-9390ABA5D83D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2DDCC8C7-4EF1-4AF3-BD48-DB0A163C465D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DDCC8C7-4EF1-4AF3-BD48-DB0A163C465D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2DDCC8C7-4EF1-4AF3-BD48-DB0A163C465D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2DDCC8C7-4EF1-4AF3-BD48-DB0A163C465D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3BCFC07E-576C-4E21-8D0B-9390ABA5D83D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3BCFC07E-576C-4E21-8D0B-9390ABA5D83D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3BCFC07E-576C-4E21-8D0B-9390ABA5D83D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3BCFC07E-576C-4E21-8D0B-9390ABA5D83D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C88571E9-3CAD-4472-8D9D-25753385C2CF}
+	EndGlobalSection
+EndGlobal
