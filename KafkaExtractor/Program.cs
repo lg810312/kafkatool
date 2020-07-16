@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Threading;
+using System.Text;
 
 namespace KafkaExtractor
 {
@@ -15,6 +17,15 @@ namespace KafkaExtractor
 
         const string logCategory = "KafkaTool.KafkaExtractor";
         static ILogger logger = LoggerFactory.Create(builder => builder.AddDebug().AddConsole().AddConfiguration(config)).CreateLogger(logCategory);
+
+        static System.Collections.Concurrent.ConcurrentQueue<string> MessageList = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        static long MessageExtractedCount = 0;
+        static bool ExtractionInProgress;
+        const uint MessageWriteBufferSize_Default = 5000; //Default WriteBuffer, can be overwritten in appsettings.json
+        static uint MessageWriteBufferSize;
+        const uint MaxMessageFileSize_Default = uint.MaxValue; //Default MaxMessageFileSize, can be overwritten in appsettings.json
+        static uint MaxMessageFileSize;
+        const int MaxConcurrentTasks_Default = 8; //Default MaxConcurrentTasks, can be overwritten in appsettings.json
 
         /// <summary>
         /// consumer group functionality (i.e. Subscribe + offset commits) is not used.
@@ -35,7 +46,7 @@ namespace KafkaExtractor
                     // Note: End of partition notification has not been enabled, so
                     // it is guaranteed that the ConsumeResult instance corresponds
                     // to a Message, and not a PartitionEOF event.
-                    message = consumeResult.Value;
+                    message = consumeResult.Message.Value;
                     logger.LogInformation($"Received message at {consumeResult.TopicPartitionOffset}");
                 }
                 catch (ConsumeException e)
@@ -47,14 +58,15 @@ namespace KafkaExtractor
                     consumer.Close();
                 }
 
+                MessageExtractedCount++;
                 return message;
             }
         }
 
-        static List<string> AssignManually(ConsumerConfig consumerConfig, string topic, int partition, long offset, string filter)
+        static void AssignManually(ConsumerConfig consumerConfig, string topic, int partition, long offset, string filter, DateTime timeAfter)
         {
             string message = null;
-            var messagelist = new List<string>();
+            long ExtractedCountWithFilter = 0;
 
             using (var consumer = new ConsumerBuilder<Ignore, string>(consumerConfig).SetErrorHandler((_, e) => logger.LogError($"Error: {e.Reason}")).Build())
             {
@@ -72,11 +84,18 @@ namespace KafkaExtractor
                             // Note: End of partition notification has not been enabled, so
                             // it is guaranteed that the ConsumeResult instance corresponds
                             // to a Message, and not a PartitionEOF event.
-                            message = consumeResult.Value;
+                            if (consumeResult.Message.Timestamp.UtcDateTime.CompareTo(timeAfter) < 0)
+                            {
+                                logger.LogInformation($"Skip message at {consumeResult.TopicPartitionOffset} as it is ealier than {timeAfter}");
+                                continue;
+                            }
+                            message = consumeResult.Message.Value;
                             logger.LogInformation($"Received message at {consumeResult.TopicPartitionOffset}");
                             if (string.IsNullOrWhiteSpace(filter) || message.Contains(filter)) // if filter is actually empty or message contains filter, extract the message
                             {
-                                messagelist.Add(message);
+                                MessageList.Enqueue(message);
+                                ExtractedCountWithFilter++;
+                                MessageExtractedCount++;
                                 logger.LogInformation("Message extracted");
                             }
                             if (consumeResult.TopicPartitionOffset.Offset == lastoffset) break;
@@ -94,8 +113,46 @@ namespace KafkaExtractor
                 }
             }
 
-            logger.LogInformation($"{messagelist.Count} extracted from partition {partition}");
-            return messagelist;
+            logger.LogInformation($"{ExtractedCountWithFilter} extracted from partition {partition}");
+        }
+
+        static void WriteMessageToFileAsync(string FilePath, string FileName)
+        {
+            string message = null;
+            var messagelist = new List<string>();
+
+            //Wait for adding messages to queue
+            Thread.Sleep(5000);
+
+            var FullPath = Path.Combine(FilePath, string.Format(FileName, DateTime.Now));
+
+            while (ExtractionInProgress || !MessageList.IsEmpty)
+            {
+                messagelist.Clear();
+                while (!MessageList.IsEmpty && messagelist.Count < MessageWriteBufferSize)
+                    if (MessageList.TryDequeue(out message)) messagelist.Add(message);
+
+                // Save to extraction file
+                if (messagelist.Count > 0)
+                    try
+                    {
+                        File.AppendAllLines(FullPath, messagelist);
+
+                        if (new FileInfo(FullPath).Length > MaxMessageFileSize)
+                        {
+                            FileName = config.GetSection("Extraction").GetValue<string>("FileName");
+                            FullPath = Path.Combine(FilePath, string.Format(FileName, DateTime.Now));
+                        }
+
+                        logger.LogInformation($"Successfully save extraction file {FullPath}!");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, $"Fail to save extraction file {FullPath}!");
+                    }
+
+                Thread.Sleep(500);
+            }
         }
 
         static void Main(string[] args)
@@ -151,28 +208,30 @@ namespace KafkaExtractor
             var ExtractionFilter = ExtractionSection.GetValue<string>("Filter");
             // if offsetlist has more than 1, filter is ignored.
             if (offsetlist.Count > 1) ExtractionFilter = string.Empty;
+            MessageWriteBufferSize = ExtractionSection.GetValue("MessageWriteBufferSize", MessageWriteBufferSize_Default);
+            if (MessageWriteBufferSize == 0) MessageWriteBufferSize = MessageWriteBufferSize_Default;
+            MaxMessageFileSize = ExtractionSection.GetValue("MaxMessageFileSize", MaxMessageFileSize_Default);
+            if (MaxMessageFileSize == 0) MaxMessageFileSize = MaxMessageFileSize_Default;
+            var timeAfter = ExtractionSection.GetValue("TimeAfter", DateTime.MinValue);
+            int MaxConcurrentTasks = ExtractionSection.GetValue("MaxConcurrentTasks", MaxConcurrentTasks_Default);
 
             // Start to extract
-            var extractionlist = new List<string>();
-            Parallel.ForEach(partitionlist, new ParallelOptions { MaxDegreeOfParallelism = 8 }, partition =>
+            MessageExtractedCount = 0;
+            ExtractionInProgress = true;
+            var WriteMessage = new Thread(() => WriteMessageToFileAsync(ExtractionPath, ExtractionFileName));
+            WriteMessage.Start();
+            Parallel.ForEach(partitionlist, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, partition =>
                 {
                     if (offsetlist.Count > 1)
-                        offsetlist.ForEach(offset => extractionlist.Add(AssignManually(consumerConfig, topic, partition, offset)));
+                        offsetlist.ForEach(offset => MessageList.Enqueue(AssignManually(consumerConfig, topic, partition, offset)));
                     else
-                        extractionlist.AddRange(AssignManually(consumerConfig, topic, partition, offsetlist[0], ExtractionFilter));
+                        AssignManually(consumerConfig, topic, partition, offsetlist[0], ExtractionFilter, timeAfter);
                 });
-            logger.LogInformation($"{extractionlist.Count} messages are extracted");
+            ExtractionInProgress = false;
+            while (WriteMessage.IsAlive) Thread.Sleep(10);
 
-            // Save to extraction file
-            try
-            {
-                File.WriteAllLines(Path.Combine(ExtractionPath, ExtractionFileName), extractionlist);
-                logger.LogInformation($"Successfully save extraction file {ExtractionFileName}!");
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Fail to save extraction file {0}!", ExtractionFileName);
-            }
+            logger.LogInformation($"{MessageExtractedCount} messages are extracted");
+            logger.LogInformation("Extraction and saving completed!");
         }
     }
 }
