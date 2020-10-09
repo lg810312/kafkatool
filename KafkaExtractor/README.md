@@ -10,8 +10,8 @@ appsettings.json is the setting file. Important setting items are as below.
 - Extraction.Path: path to which the data file is saved
 - Extraction.FileName: filename of the data file, {} will be replaced with datetime of extraction
 - Extraction.Filter: only messages containing filter are saved while others are ignored. Not effective when partition list has 1 and offset list is not empty. If not specified or not effective, no messages will be ignored.
-- Extraction.MessageWriteBufferSize: capacity of write buffer. The unit is count of messages. Once the buffer is full, messages in the buffer are written to file and then the buffer is cleared.
-- Extraction.MaxMessageFileSize: max file size of message file. The unit is byte. Once a message file size reaches or exceeds the number, a new message file is used to store remaining unsaved messages.
+- Extraction.MessageWriteBufferSize: capacity of write buffer. The unit is count of messages. Once the buffer is full, messages in the buffer are written to file and then the buffer is cleared. If not specified, default value is 5000.
+- Extraction.MaxMessageFileSize: max file size of message file. The unit is byte. Once a message file size reaches or exceeds the number, a new message file is used to store remaining unsaved messages. If not specified, default value is 4GB.
 - Extraction.TimeAfter: Messages with timestamp after the specified time are extracted. Otherwise they are ignored. If empty or invalid, the time is 0001-01-01.
 - Extraction.MaxConcurrentTasks: the number of tasks concurrently running to consume messages from Kafka. It is effective when it is 2 or more and not greater than partition count.
 

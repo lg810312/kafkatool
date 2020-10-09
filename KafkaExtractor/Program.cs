@@ -172,12 +172,14 @@ namespace KafkaExtractor
 
         /// <summary>
         /// Read extraction list file
+        /// Line format: topic,partition,offset[,IsAll]
+        /// IsAll, 0: only retrieve the data at offset, 1+: retrieve all from offset
         /// </summary>
         /// <param name="FullPath"></param>
         /// <returns></returns>
-        static List<Tuple<string,int,long>> ReadExtractionList(string FullPath)
+        static List<Tuple<string,int,long, bool>> ReadExtractionList(string FullPath)
         {
-            var extractionList = new List<Tuple<string, int, long>>();
+            var extractionList = new List<Tuple<string, int, long, bool>>();
             if (string.IsNullOrWhiteSpace(FullPath)) return extractionList;
 
             try
@@ -185,7 +187,7 @@ namespace KafkaExtractor
                 foreach (var line in File.ReadAllLines(FullPath))
                 {
                     var extrationitem = line.Split(',');
-                    extractionList.Add(new Tuple<string, int, long>(extrationitem[0], int.Parse(extrationitem[1]), long.Parse(extrationitem[2])));
+                    extractionList.Add(new Tuple<string, int, long, bool>(extrationitem[0], int.Parse(extrationitem[1]), long.Parse(extrationitem[2]), extrationitem.Length > 3 && byte.Parse(extrationitem[3]) > 0));
                 }
             }
             catch (Exception ex)
@@ -271,7 +273,12 @@ namespace KafkaExtractor
             // Start to extract messages from Kafka
             if (extractionList.Count > 0) // if extractcionList has items
                 Parallel.ForEach(extractionList, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, extractionitem =>
-                   MessageList.Enqueue(AssignManually(consumerConfig, extractionitem.Item1, extractionitem.Item2, extractionitem.Item3)));
+                {
+                    if (extractionitem.Item4)
+                        AssignManually(consumerConfig, extractionitem.Item1, extractionitem.Item2, extractionitem.Item3, ExtractionFilter, DateTime.MinValue);
+                    else
+                        MessageList.Enqueue(AssignManually(consumerConfig, extractionitem.Item1, extractionitem.Item2, extractionitem.Item3));
+                });
             else
                 Parallel.ForEach(partitionlist, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, partition =>
                     {

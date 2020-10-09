@@ -6,6 +6,8 @@ using Confluent.Kafka;
 using Newtonsoft.Json.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace KafkaSpout
 {
@@ -15,6 +17,8 @@ namespace KafkaSpout
 
         const string logCategory = "KafkaTool.KafkaSpout";
         static ILogger logger = LoggerFactory.Create(builder => builder.AddDebug().AddConsole().AddConfiguration(config)).CreateLogger(logCategory);
+
+        const int MaxConcurrentTasks_Default = 8; //Default MaxConcurrentTasks, can be overwritten in appsettings.json
 
         /// <summary>
         /// Generate key of message with KeyParser. Currently only support json parser using NewtonSoft
@@ -49,37 +53,73 @@ namespace KafkaSpout
             var producerConfig = new ProducerConfig { BootstrapServers = brokerlist };
 
             // Kafka topic
-            var topic = KafkaSection.GetValue<string>("topic");
+            string topic = KafkaSection.GetValue<string>("topic");
 
             // Producing config
             var SpoutSection = config.GetSection("Spout");
-            var SpoutFilePath = SpoutSection.GetValue<string>("FilePath");
-            if (!File.Exists(SpoutFilePath)) { logger.LogError($"{SpoutFilePath} not found"); Environment.Exit(-1); }
-            var SpoutFilter = SpoutSection.GetValue<string>("Filter");
-            var SpoutKeyParser = SpoutSection.GetValue<string>("KeyParser").ToLower();
+            string SpoutFilePath = SpoutSection.GetValue<string>("FilePath");
+            List<string> SpoutFiles = new List<string>();
+            if (File.Exists(SpoutFilePath))
+                SpoutFiles.Add(SpoutFilePath);
+            else
+            {
+                string FileFolder = SpoutSection.GetValue<string>("FileFolder");
+
+                logger.LogError($"{SpoutFilePath} not found! Try to find files in {FileFolder}");
+
+                try
+                {
+                    SpoutFiles.AddRange(Directory.EnumerateFiles(FileFolder));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex.Message);
+                }
+            }
+
+            string SpoutFilter = SpoutSection.GetValue<string>("Filter");
+            string SpoutKeyParser = SpoutSection.GetValue<string>("KeyParser").ToLower();
             if (!new string[] { "json" }.Contains(SpoutKeyParser)) { logger.LogError("KeyParser must be json!"); Environment.Exit(-1); }
-            var SpoutKeyPattern = SpoutSection.GetValue<string>("KeyPattern");
-            var SpoutKeyPatternSeparator = SpoutSection.GetValue<string>("KeyPatternSeparator");
+            string SpoutKeyPattern = SpoutSection.GetValue<string>("KeyPattern");
+            string SpoutKeyPatternSeparator = SpoutSection.GetValue<string>("KeyPatternSeparator");
+            int MaxConcurrentTasks = SpoutSection.GetValue("MaxConcurrentTasks", MaxConcurrentTasks_Default);
 
             string MessageKey = null;
             long CountMessageSent = 0;
-            using (var producer = new ProducerBuilder<string, string>(producerConfig).Build())
+
+            var producer = new ProducerBuilder<string, string>(producerConfig).Build();
+
+            Parallel.ForEach(SpoutFiles, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, SpoutFile =>
             {
-                foreach (var message in File.ReadLines(SpoutFilePath))
-                {
-                    if (!string.IsNullOrWhiteSpace(SpoutFilter) && !message.Contains(SpoutFilter)) continue;
+            foreach (var message in File.ReadLines(SpoutFile))
+            {
+                if (!string.IsNullOrWhiteSpace(SpoutFilter) && !message.Contains(SpoutFilter)) continue;
 
-                    MessageKey = GenerateKey(message, SpoutKeyParser, SpoutKeyPattern, SpoutKeyPatternSeparator);
+                MessageKey = GenerateKey(message, SpoutKeyParser, SpoutKeyPattern, SpoutKeyPatternSeparator);
 
-                    producer.ProduceAsync(topic, new Message<string, string> { Key = MessageKey, Value = message });
+                    Action<DeliveryReport<string, string>> handler = r =>
+                    {
+                        if (!r.Error.IsError)
+                            logger.LogInformation($"Delivered message to {r.TopicPartitionOffset}");
+                        else
+                            logger.LogError($"Delivery Error: {r.Error.Reason}");
+                    };
 
-                    CountMessageSent++;
-                    logger.LogInformation($"{CountMessageSent} message(s) sent");
+                    try
+                    {
+                        producer.Produce(topic, new Message<string, string> { Key = MessageKey, Value = message }, handler);
+                        CountMessageSent++;
+                        logger.LogInformation($"{CountMessageSent} message(s) sent");
+                    }
+                    catch (ProduceException<string, string> e)
+                    {
+                        logger.LogError($"failed to deliver message: {e.Message} [{e.Error.Code}]");
+                    }
                 }
+            });
 
-                // As the Tasks returned by ProduceAsync are not waited on there will still be messages in flight.
-                producer.Flush(TimeSpan.FromSeconds(10));
-            }
+            // Producer asychronously send data, so await data to be sent completely
+            producer.Flush(TimeSpan.FromSeconds(1000));
         }
     }
 }
