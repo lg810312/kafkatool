@@ -63,6 +63,15 @@ namespace KafkaExtractor
             }
         }
 
+        /// <summary>
+        /// Extract messages using filter after specified time
+        /// </summary>
+        /// <param name="consumerConfig"></param>
+        /// <param name="topic"></param>
+        /// <param name="partition"></param>
+        /// <param name="offset"></param>
+        /// <param name="filter"></param>
+        /// <param name="timeAfter"></param>
         static void AssignManually(ConsumerConfig consumerConfig, string topic, int partition, long offset, string filter, DateTime timeAfter)
         {
             string message = null;
@@ -70,9 +79,10 @@ namespace KafkaExtractor
 
             using (var consumer = new ConsumerBuilder<Ignore, string>(consumerConfig).SetErrorHandler((_, e) => logger.LogError($"Error: {e.Reason}")).Build())
             {
+                // Get last offset of specified partition
                 long lastoffset = consumer.QueryWatermarkOffsets(new TopicPartition(topic, new Partition(partition)), TimeSpan.FromSeconds(10)).High - 1;
 
-                // extract from offset
+                // Extract messages from offset
                 consumer.Assign(new TopicPartitionOffset(topic, partition, offset));
                 try
                 {
@@ -116,12 +126,17 @@ namespace KafkaExtractor
             logger.LogInformation($"{ExtractedCountWithFilter} extracted from partition {partition}");
         }
 
+        /// <summary>
+        /// Async write messages to file
+        /// </summary>
+        /// <param name="FilePath"></param>
+        /// <param name="FileName"></param>
         static void WriteMessageToFileAsync(string FilePath, string FileName)
         {
             string message = null;
             var messagelist = new List<string>();
 
-            //Wait for adding messages to queue
+            //Wait for messages added to queue
             Thread.Sleep(5000);
 
             var FullPath = Path.Combine(FilePath, string.Format(FileName, DateTime.Now));
@@ -153,6 +168,34 @@ namespace KafkaExtractor
 
                 Thread.Sleep(500);
             }
+        }
+
+        /// <summary>
+        /// Read extraction list file
+        /// Line format: topic,partition,offset[,IsAll]
+        /// IsAll, 0: only retrieve the data at offset, 1+: retrieve all from offset
+        /// </summary>
+        /// <param name="FullPath"></param>
+        /// <returns></returns>
+        static List<Tuple<string,int,long, bool>> ReadExtractionList(string FullPath)
+        {
+            var extractionList = new List<Tuple<string, int, long, bool>>();
+            if (string.IsNullOrWhiteSpace(FullPath)) return extractionList;
+
+            try
+            {
+                foreach (var line in File.ReadAllLines(FullPath))
+                {
+                    var extrationitem = line.Split(',');
+                    extractionList.Add(new Tuple<string, int, long, bool>(extrationitem[0], int.Parse(extrationitem[1]), long.Parse(extrationitem[2]), extrationitem.Length > 3 && byte.Parse(extrationitem[3]) > 0));
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex.Message);
+            }
+
+            return extractionList;
         }
 
         static void Main(string[] args)
@@ -199,6 +242,10 @@ namespace KafkaExtractor
             // if messages from multiple partitions are to be extracted or offset is not specified, offset will be from beginning 
             if (partitionlist.Count != 1 || offsetlist.Count == 0) offsetlist = new long[1] { Offset.Beginning }.ToList();
 
+            // Kafka extraction list
+            var extractionListFile = KafkaSection.GetValue<string>("extractionlist");
+            var extractionList = ReadExtractionList(extractionListFile);
+
             // Extraction config
             var ExtractionSection = config.GetSection("Extraction");
             var ExtractionPath = ExtractionSection.GetValue<string>("Path");
@@ -206,7 +253,7 @@ namespace KafkaExtractor
             var ExtractionFileName = ExtractionSection.GetValue<string>("FileName");
             ExtractionFileName = string.Format(ExtractionFileName, DateTime.Now);
             var ExtractionFilter = ExtractionSection.GetValue<string>("Filter");
-            // if offsetlist has more than 1, filter is ignored.
+            // If offsetlist has more than 1, filter is ignored.
             if (offsetlist.Count > 1) ExtractionFilter = string.Empty;
             MessageWriteBufferSize = ExtractionSection.GetValue("MessageWriteBufferSize", MessageWriteBufferSize_Default);
             if (MessageWriteBufferSize == 0) MessageWriteBufferSize = MessageWriteBufferSize_Default;
@@ -218,15 +265,30 @@ namespace KafkaExtractor
             // Start to extract
             MessageExtractedCount = 0;
             ExtractionInProgress = true;
+
+            // Start a thread to async writing file
             var WriteMessage = new Thread(() => WriteMessageToFileAsync(ExtractionPath, ExtractionFileName));
             WriteMessage.Start();
-            Parallel.ForEach(partitionlist, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, partition =>
+
+            // Start to extract messages from Kafka
+            if (extractionList.Count > 0) // if extractcionList has items
+                Parallel.ForEach(extractionList, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, extractionitem =>
                 {
-                    if (offsetlist.Count > 1)
-                        offsetlist.ForEach(offset => MessageList.Enqueue(AssignManually(consumerConfig, topic, partition, offset)));
+                    if (extractionitem.Item4)
+                        AssignManually(consumerConfig, extractionitem.Item1, extractionitem.Item2, extractionitem.Item3, ExtractionFilter, DateTime.MinValue);
                     else
-                        AssignManually(consumerConfig, topic, partition, offsetlist[0], ExtractionFilter, timeAfter);
+                        MessageList.Enqueue(AssignManually(consumerConfig, extractionitem.Item1, extractionitem.Item2, extractionitem.Item3));
                 });
+            else
+                Parallel.ForEach(partitionlist, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentTasks }, partition =>
+                    {
+                        if (offsetlist.Count > 1)
+                            offsetlist.ForEach(offset => MessageList.Enqueue(AssignManually(consumerConfig, topic, partition, offset)));
+                        else
+                            AssignManually(consumerConfig, topic, partition, offsetlist[0], ExtractionFilter, timeAfter);
+                    });
+
+            // Extraction completed
             ExtractionInProgress = false;
             while (WriteMessage.IsAlive) Thread.Sleep(10);
 
