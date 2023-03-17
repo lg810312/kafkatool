@@ -49,3 +49,5 @@ setting snippet sample:
 - 2020-06-18 Able to consume messages with timestamp after the specified time.
 - 2020-07-15 Update dependencies to their latest version. Add setting items to set write buffer size, max message file size and max concurrent task count.
 - 2020-07-16 Able to extract specified messages using an list.
+- 2020-10-09 Enhance extractlist, support processing data from multiple files. Extractlist is enhanced to extract data from an offset to end.
+- 2023-03-17 SDK upgraded to .net 6

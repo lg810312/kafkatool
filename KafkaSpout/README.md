@@ -23,4 +23,5 @@ For example, message is { MarketCode: "CHN", BrandCode: "01" }, pattern is $.Mar
 ## ChangeLog
 
 2019-11-20 First stable version
-2020-07-20 Support read files from a specified folder
+2020-07-20 Support reading files from a specified folder
+2023-03-17 SDK upgraded to .net 6. Upgrade Newtonsoft.Json to the latest stable version.
